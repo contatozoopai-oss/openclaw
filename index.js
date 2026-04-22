@@ -4,7 +4,7 @@ import OpenAI from 'openai'
 // 🔑 clientes
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY // 🔥 tem que ser a SECRET KEY
+  process.env.SUPABASE_KEY // ✅ SECRET KEY
 )
 
 const openai = new OpenAI({
@@ -20,12 +20,10 @@ async function processTasks() {
       .from('tasks')
       .select('*')
       .eq('status', 'pending')
-      .limit(5) // evita overload
-
-    console.log("📦 Tasks encontradas:", tasks)
+      .limit(5)
 
     if (error) {
-      console.error("❌ Erro Supabase:", error)
+      console.error("❌ Erro Supabase:", error.message)
       return
     }
 
@@ -34,18 +32,23 @@ async function processTasks() {
       return
     }
 
+    console.log(`📦 ${tasks.length} task(s) encontrada(s)`)
+
     for (const task of tasks) {
       try {
         console.log("⚙️ Processando:", task.input)
 
-        // 🤖 OpenAI
+        // 🧠 marca como processing (evita duplicação)
+        await supabase
+          .from('tasks')
+          .update({ status: 'processing' })
+          .eq('id', task.id)
+
+        // 🤖 chamada OpenAI
         const response = await openai.chat.completions.create({
           model: "gpt-4.1-mini",
           messages: [
-            {
-              role: "user",
-              content: task.input
-            }
+            { role: "user", content: task.input }
           ]
         })
 
@@ -55,7 +58,7 @@ async function processTasks() {
 
         console.log("🧠 Resposta:", output)
 
-        // 💾 salva no banco
+        // 💾 salva resultado
         const { error: updateError } = await supabase
           .from('tasks')
           .update({
@@ -65,26 +68,39 @@ async function processTasks() {
           .eq('id', task.id)
 
         if (updateError) {
-          console.error("❌ Erro ao salvar:", updateError)
+          console.error("❌ Erro ao salvar:", updateError.message)
         } else {
           console.log("✅ Concluído:", task.id)
         }
 
       } catch (err) {
-        console.error("❌ Erro ao processar task:", err)
+        console.error("❌ Erro ao processar task:", err.message)
+
+        // ❌ marca erro no banco
+        await supabase
+          .from('tasks')
+          .update({
+            status: 'error',
+            output: err.message
+          })
+          .eq('id', task.id)
       }
     }
 
   } catch (err) {
-    console.error("❌ Erro geral:", err)
+    console.error("❌ Erro geral:", err.message)
   }
 }
 
-// 🧠 loop controlado (evita duplicação)
+// 🧠 controle de execução (anti loop duplicado)
 let isRunning = false
 
 setInterval(async () => {
-  if (isRunning) return
+  if (isRunning) {
+    console.log("⏳ Ainda processando... pulando ciclo")
+    return
+  }
+
   isRunning = true
 
   await processTasks()
@@ -92,5 +108,5 @@ setInterval(async () => {
   isRunning = false
 }, 5000)
 
-// 🚀 primeira execução imediata
+// 🚀 primeira execução
 processTasks()
